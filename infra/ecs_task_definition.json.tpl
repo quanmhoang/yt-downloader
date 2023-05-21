@@ -1,0 +1,40 @@
+[
+  {
+    "name":"${service_name}",
+    "image":"${ecr_repo}",
+    "essential":true,
+    "stopTimeout":120,
+    "portMappings":[
+      {
+        "containerPort":8080,
+        "hostPort":8080
+      }
+    ],
+    "environment":[
+      {
+        "name":"ENVIRONMENT",
+        "value":"${environment}"
+      },
+      {
+        "name":"SERVICE_NAME",
+        "value":"${service_name}"
+      },
+      {
+        "name":"LOG_GROUP_ARN",
+        "value":"${log_group_arn}"
+      },
+      {
+        "name":"PORT",
+        "value":"8080"
+      }
+    ],
+    "logConfiguration":{
+      "logDriver":"awslogs",
+      "options":{
+        "awslogs-group":"${service_name}",
+        "awslogs-region":"${region}",
+        "awslogs-stream-prefix": "${service_name}"
+      }
+    }
+  }
+]

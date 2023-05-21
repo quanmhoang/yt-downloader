@@ -1,0 +1,20 @@
+{
+    "compilerOptions": {
+        "target": "es6",
+        "module": "commonjs",
+        "esModuleInterop": true,
+        "sourceMap": true,
+        "outDir": "build",
+        "noImplicitAny": false,
+        "noUnusedParameters": false,
+        "noUnusedLocals": true,
+        "resolveJsonModule": true,
+        "experimentalDecorators": true,
+        "rootDir": ".",
+        "lib": ["es6"],
+        "strict": true,
+        "baseUrl": "./src"
+    },
+    "exclude": ["node_modules", "typings"],
+    "include": ["src/**/*", "locales/*", "config/**/*", "logger/**/*"]
+}

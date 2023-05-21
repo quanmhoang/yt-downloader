@@ -1,0 +1,275 @@
+variables:
+  TF_ROOT: infra
+  TF_BUCKET: myria-terraform-tfstates
+  TF_DYNAMODB_TABLE: myria-terraform-tfstates
+
+# Resuable step, tf init with relative stage.
+.tf_init:
+  before_script:
+    - |
+
+      cd $TF_ROOT
+      rm -rf .terraform
+
+      # Set up SSH connections for TF Modules
+      mkdir ~/.ssh/
+      echo "$TF_CI_SSH_KEY" | tr -d '\r' > ~/.ssh/id_rsa
+      echo "$TF_CI_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+      chmod 400 ~/.ssh/id_rsa
+
+      # Blue/green deployment. Branch release/v1.0.0 -> TF_VAR_stage=prod-v1-0-0
+      # https://myria.atlassian.net/wiki/spaces/MYRIANET/pages/41419411/Production+Release+Process
+      if [[ "$CI_COMMIT_BRANCH" == *"release/"* ]]; then
+        version=${CI_COMMIT_BRANCH#*/}
+        formatted_verson=${version//./-}
+        TF_VAR_stage="$TF_VAR_stage-$formatted_verson"
+      fi
+
+      # DON'T change below TF settings
+      # https://myria.atlassian.net/wiki/spaces/MYR/pages/28967108/Pipeline+Configuration
+      terraform init \
+      -reconfigure \
+      -backend-config="bucket=$TF_BUCKET" \
+      -backend-config="dynamodb_table=$TF_DYNAMODB_TABLE" \
+      -backend-config="key=$TF_VAR_account/$CI_PROJECT_NAME/${TF_VAR_stage}/lock.tfstate" \
+      -backend-config="region=us-east-1"
+
+# Resuable step, tf init with relative stage.
+.tf_init_newrelic:
+  before_script:
+    - |
+
+      cd $TF_ROOT
+      rm -rf .terraform
+
+      # Set up SSH connections for TF Modules
+      mkdir ~/.ssh/
+      echo "$TF_CI_SSH_KEY" | tr -d '\r' > ~/.ssh/id_rsa
+      echo "$TF_CI_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+      chmod 400 ~/.ssh/id_rsa
+
+      # Blue/green deployment. Branch release/v1.0.0 -> TF_VAR_stage=prod-v1-0-0
+      # https://myria.atlassian.net/wiki/spaces/MYRIANET/pages/41419411/Production+Release+Process
+      if [[ "$CI_COMMIT_BRANCH" == *"release/"* ]]; then
+        version=${CI_COMMIT_BRANCH#*/}
+        formatted_verson=${version//./-}
+        TF_VAR_stage="$TF_VAR_stage-$formatted_verson"
+      fi
+
+      # DON'T change below TF settings
+      # https://myria.atlassian.net/wiki/spaces/MYR/pages/28967108/Pipeline+Configuration
+      terraform init \
+      -reconfigure \
+      -backend-config="bucket=$TF_BUCKET" \
+      -backend-config="dynamodb_table=$TF_DYNAMODB_TABLE" \
+      -backend-config="key=$TF_VAR_account/$CI_PROJECT_NAME/${TF_VAR_stage}-newrelic/lock.tfstate" \
+      -backend-config="region=us-east-1"
+
+.aws_dind_image_init:
+  before_script:
+    - |
+      yum install -y jq
+      amazon-linux-extras install docker
+
+stages:
+  - dev-package-image
+  - dev-deploy
+  - staging-package-image
+  - staging-deploy
+  - prod-package-image
+  - prod-deploy
+
+dev-package-image:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "dev"'
+  image:
+    name: amazon/aws-cli
+    entrypoint: [""]
+  services:
+    - docker:dind
+  stage: dev-package-image
+  extends:
+    - .aws_dind_image_init
+  script:
+    - |
+
+      ./scripts/assume_deployer_role.sh $account
+
+       # Replace JSON config file
+      ./scripts/replace_json_file.sh "./config/config.$stage.json" "./config/config.json"
+
+      # Fetch secrets
+      newrelicLicenseKey=$(./scripts/fetch_ssm.sh $stage newrelicLicenseKey /newrelic/licenseKey)
+      # Replace / add secrets to JSON config file
+      ./scripts/replace_json_value.sh ./config/config.json newrelicLicenseKey $newrelicLicenseKey
+
+      nodeAPIKeySecret=$(./scripts/fetch_ssm.sh $stage nodeAPIKeySecret) #myria-services-nodes/dev/nodeAPIKeySecret
+      apiKey=$(./scripts/fetch_ssm.sh $stage apiKey) #myria-services-nodes/dev/apiKey
+      ./scripts/replace_json_value.sh ./config/config.json nodeAPIKeySecret $nodeAPIKeySecret
+      ./scripts/replace_json_value.sh ./config/config.json apiKey $apiKey
+
+      ./scripts/publish_image_ecr.sh $account $region $ecr_repo
+
+      # Rolling Update the ECS instance
+      ./scripts/rolling_update.sh $region $ecs_cluster_name $ecs_service_name $CI_COMMIT_BRANCH
+  variables:
+    account: myria-net-nonprod
+    region: us-east-1
+    stage: dev
+    ecr_repo: myriaverse-services-node-dev
+    ecs_cluster_name: myriaverse-services-node-cluster-dev
+    ecs_service_name: myriaverse-services-node-dev
+
+dev-deploy:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "dev"'
+  image:
+    name: hashicorp/terraform:light
+    entrypoint:
+      - /usr/bin/env
+      - "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  stage: dev-deploy
+  extends:
+    - .tf_init
+  script:
+    - terraform apply -lock=false -auto-approve
+  variables:
+    TF_VAR_account: myria-net-nonprod
+    TF_VAR_stage: dev
+    TF_VAR_repository: $CI_PROJECT_NAME
+    TF_VAR_branch: $CI_COMMIT_BRANCH
+
+staging-package-image:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "staging"'
+  image:
+    name: amazon/aws-cli
+    entrypoint: [""]
+  services:
+    - docker:dind
+  stage: staging-package-image
+  extends:
+    - .aws_dind_image_init
+  script:
+    - |
+
+      ./scripts/assume_deployer_role.sh $account
+
+      # Fetch secrets
+      newrelicLicenseKey=$(./scripts/fetch_ssm.sh $stage newrelicLicenseKey /newrelic/licenseKey)
+      infuraUrl=$(./scripts/fetch_ssm.sh $stage newrelicLicenseKey /myria-core-service/staging/infuraUrl)
+
+      # Replace JSON config file
+      ./scripts/replace_json_file.sh "./config/config.$stage.json" "./config/config.json"
+
+      # Replace / add secrets to JSON config file
+      ./scripts/replace_json_value.sh ./config/config.json newrelicLicenseKey $newrelicLicenseKey
+      ./scripts/replace_json_value.sh ./config/config.json infuraUrl $infuraUrl
+
+      nodeAPIKeySecret=$(./scripts/fetch_ssm.sh $stage nodeAPIKeySecret)
+      apiKey=$(./scripts/fetch_ssm.sh $stage apiKey)
+      ./scripts/replace_json_value.sh ./config/config.json nodeAPIKeySecret $nodeAPIKeySecret
+      ./scripts/replace_json_value.sh ./config/config.json apiKey $apiKey
+
+      # Package and ship image
+      ./scripts/publish_image_ecr.sh $account $region $ecr_repo
+
+      # Rolling Update the ECS instance
+      ./scripts/rolling_update.sh $region $ecs_cluster_name $ecs_service_name $CI_COMMIT_BRANCH
+  variables:
+    account: myria-net-nonprod
+    region: us-east-1
+    stage: staging
+    ecr_repo: myriaverse-services-node-staging
+    ecs_cluster_name: myriaverse-services-node-cluster-staging
+    ecs_service_name: myriaverse-services-node-staging
+
+staging-deploy:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "staging"'
+  image:
+    name: hashicorp/terraform:light
+    entrypoint:
+      - /usr/bin/env
+      - "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  stage: staging-deploy
+  extends:
+    - .tf_init
+  script:
+    - terraform apply -lock=false -auto-approve
+  variables:
+    TF_VAR_account: myria-net-nonprod
+    TF_VAR_stage: staging
+    TF_VAR_repository: $CI_PROJECT_NAME
+    TF_VAR_branch: $CI_COMMIT_BRANCH
+
+prod-package-image:
+  rules:
+    - if: '$CI_COMMIT_REF_NAME =~ /^release/'
+  image:
+    name: amazon/aws-cli
+    entrypoint: [""]
+  services:
+    - docker:dind
+  stage: prod-package-image
+  extends:
+    - .aws_dind_image_init
+  script:
+    - |
+
+      ./scripts/assume_deployer_role.sh $account
+
+      # Fetch secrets
+      newrelicLicenseKey=$(./scripts/fetch_ssm.sh $stage newrelicLicenseKey /newrelic/licenseKey)
+      infuraUrl=$(./scripts/fetch_ssm.sh $stage newrelicLicenseKey /myria-core-service/prod/infuraUrl)
+      destinationAddress=$(./scripts/fetch_ssm.sh $stage destinationAddress)
+
+      # Replace JSON config file
+      ./scripts/replace_json_file.sh "./config/config.$stage.json" "./config/config.json"
+
+      # Replace / add secrets to JSON config file
+      ./scripts/replace_json_value.sh ./config/config.json newrelicLicenseKey $newrelicLicenseKey
+      ./scripts/replace_json_value.sh ./config/config.json infuraUrl $infuraUrl
+      ./scripts/replace_json_value.sh ./config/config.json destinationAddress $destinationAddress
+
+      nodeAPIKeySecret=$(./scripts/fetch_ssm.sh $stage nodeAPIKeySecret)
+      apiKey=$(./scripts/fetch_ssm.sh $stage apiKey)
+      ./scripts/replace_json_value.sh ./config/config.json nodeAPIKeySecret $nodeAPIKeySecret
+      ./scripts/replace_json_value.sh ./config/config.json apiKey $apiKey
+
+      # Package and ship image
+      ./scripts/publish_image_ecr.sh $account $region $ecr_repo
+
+      # Rolling Update the ECS instance
+      ./scripts/rolling_update.sh $region $ecs_cluster_name $ecs_service_name $CI_COMMIT_BRANCH
+  variables:
+    account: myria-net-prod
+    region: us-east-1
+    stage: prod
+    ecr_repo: myriaverse-services-node-prod
+    ecs_cluster_name: myriaverse-services-node-cluster-prod
+    ecs_service_name: myriaverse-services-node-prod
+
+prod-deploy:
+  rules:
+    - if: '$CI_COMMIT_REF_NAME =~ /^release/'
+  image:
+    name: hashicorp/terraform:light
+    entrypoint:
+      - /usr/bin/env
+      - "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  stage: prod-deploy
+  extends:
+    - .tf_init
+  script:
+    - |
+
+      # release/v1.0.0 -> v1.0.0
+      export TF_VAR_image_tag=${CI_COMMIT_BRANCH#*/}
+      terraform apply -lock=false -auto-approve
+  variables:
+    TF_VAR_account: myria-net-prod
+    TF_VAR_stage: prod # Overwrite to semantic release(e.g. prod-v1-0-0) during pipeline based on branch name.
+    TF_VAR_repository: $CI_PROJECT_NAME
+    TF_VAR_branch: $CI_COMMIT_BRANCH
+  when: manual
