@@ -46,7 +46,7 @@ gulp.task("build-code", () => {
 
 gulp.task(
     "build",
-    gulp.parallel("copy-swagger-doc", "copy-config-files", "copy-whitelist-files", "build-code")
+    gulp.parallel("copy-config-files", "build-code")
 );
 
 // tasks to watch over changes

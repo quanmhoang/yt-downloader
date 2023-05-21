@@ -1,7 +1,5 @@
 "use strict";
 
-require("newrelic");
-
 import startApp from "./boot";
 import  { logger } from "./utils";
 
