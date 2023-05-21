@@ -10,7 +10,7 @@ const ENVIRONMENTS = {
 const ENV = process.env.ENV || process.env.NODE_ENV || ENVIRONMENTS.dev;
 const IS_TEST = ENV === ENVIRONMENTS.test;
 
-const PORT = process.env.PORT || 8083;
+const PORT = process.env.PORT || 8080;
 
 const MAXIMUM_NUMBER_OF_NODES_PER_USER = 100;
 const CRON_JOB_SLEEP_IN_MS = 30_000;
